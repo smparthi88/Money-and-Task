@@ -49,19 +49,20 @@ if(typeof document==="undefined")return;
 const A=()=>window.AndroidSMS;
 const lsKey=()=>"smsScan:"+(S.user?.id||"");
 let syncing=false,lastSync=0;
-async function smsSync(days,quiet){
+async function smsSync(days,quiet,rng){
   if(!A()||!S.user||syncing)return 0;
   try{if(!A().hasPerm())return 0}catch(e){return 0}
   syncing=true;let added=0;
   try{
-    const now=Date.now();let since=days?now-days*864e5:+(localStorage.getItem(lsKey())||0);if(!since)since=now-30*864e5;
-    let raw=[];try{raw=JSON.parse(A().scanInbox(String(since))||"[]")}catch(e){}
+    const now=Date.now();let since=rng?new Date(rng.from+"T00:00:00").getTime():days?now-days*864e5:+(localStorage.getItem(lsKey())||0);if(!since)since=now-30*864e5;const until=rng?new Date(rng.to+"T23:59:59").getTime():Infinity;
+    let raw=[];try{raw=JSON.parse(A().scanInbox(String(since))||"[]").filter(m=>+m.date<=until)}catch(e){}
     let pend=[];try{pend=JSON.parse(A().getPending()||"[]")}catch(e){}
     const seen=new Set(),rows=[];
     for(const m of raw.concat(pend)){const h=hash((m.addr||"")+"|"+m.date+"|"+(m.body||""));if(seen.has(h))continue;seen.add(h);const p=parseSms(m.body,m.addr,m.date);if(!p)continue;rows.push({hash:h,sender:m.addr||"",body:String(m.body||"").slice(0,1000),sms_at:new Date(+m.date).toISOString(),...p})}
     for(let i=0;i<rows.length;i+=300){const{data,error}=await SB.from("sms_txns").upsert(rows.slice(i,i+300),{onConflict:"user_id,hash",ignoreDuplicates:true}).select("id");if(error)throw error;added+=(data||[]).length}
+    if(rng){const hs=rows.map(r=>r.hash);for(let i=0;i<hs.length;i+=150){const{data,error}=await SB.from("sms_txns").update({status:"pending"}).eq("status","ignored").in("hash",hs.slice(i,i+150)).select("id");if(!error)added+=(data||[]).length}}
     try{A().ack(JSON.stringify(pend.map(m=>m.key||m.id)))}catch(e){}
-    localStorage.setItem(lsKey(),String(now-2*864e5));lastSync=now;
+    if(!rng)localStorage.setItem(lsKey(),String(now-2*864e5));lastSync=now;
     if(added&&!quiet)toast(`📩 ${added} new SMS transaction(s) in SMS Inbox`);
   }catch(e){toast("SMS sync: "+(e.message||e),!0)}
   finally{syncing=false}
@@ -73,7 +74,8 @@ window.smsSync=smsSync;window.onNewSms=()=>smsSync(0,false);
 document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&Date.now()-lastSync>20000)smsSync(0,false)});
 
 /* ---------------- SMS Inbox view ---------------- */
-const SM=window.SM=window.SM||{rows:[],flt:"all",q:"",loaded:false,defAcc:localStorage.getItem("smsDefAcc")||""};
+const SM=window.SM=window.SM||{rows:[],flt:"all",q:"",loaded:false,defAcc:localStorage.getItem("smsDefAcc")||"",from:"",to:""};
+const dAgo=n=>{const d=new Date();d.setDate(d.getDate()-n);return ds(d)};
 function accFor(hint){if(!hint)return"";for(const a of S.accs){const t=[a.acc_no&&String(a.acc_no).replace(/\D/g,"").slice(-4),a.card_last4,a.acc_no&&String(a.acc_no).replace(/\D/g,"").slice(-3)].filter(Boolean);if(t.some(x=>x.endsWith(hint.slice(-3))&&(x.length<4||hint.length<4||x===hint.slice(-4))))return a.id}return""}
 function keyOf(n){return String(n||"").toLowerCase().replace(/paid to|received from|·.*$|upi|vpa|[0-9@\/\-:_.*#]+/g," ").replace(/\s+/g," ").trim().split(" ").filter(w=>w.length>2).slice(0,3).join(" ")}
 function learn(){const m={};for(const t of S.txns){if(t.category_id&&t.note){const k=keyOf(t.note);if(k)m[t.txn_type+"|"+k]=t.category_id}}return m}
@@ -89,7 +91,7 @@ async function loadList(){
 function vSms(){
   const and=!!A();let perm=false;try{perm=and&&A().hasPerm()}catch(e){}
   $("#main").innerHTML=`<div class="row sb"><h2>📩 SMS Inbox</h2><div class="row"><button class="btn ghost sm" id="smRef">↻ Refresh</button></div></div>
-  <div class="card">${and?(perm?`<div class="row" style="flex-wrap:wrap;gap:8px;align-items:center"><span class="mute" style="font-size:13px">Bank / UPI SMS are captured automatically on this phone.</span><select id="smDays" style="width:auto"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option><option value="180">Last 6 months</option></select><button class="btn sm" id="smScan">📥 Scan SMS now</button></div>`
+  <div class="card"><div class="row" style="flex-wrap:wrap;gap:8px;align-items:flex-end;margin-bottom:10px"><div><label>From date</label><input type="date" id="smFrom" value="${SM.from}" style="width:auto"></div><div><label>To date</label><input type="date" id="smTo" value="${SM.to}" style="width:auto"></div><button class="btn ghost sm" id="smClr" title="Show all dates">All dates</button>${and&&perm?'<button class="btn sm" id="smScan">📥 Scan SMS for these dates</button>':""}</div>${and?(perm?`<div class="mute" style="font-size:12px">New bank / UPI SMS are captured automatically. "Scan" reads the SMS between the dates again – entries you deleted come back; entries already added do not.</div>`
      :`<div class="alert a" style="margin:0">Allow SMS permission so the app can read bank / UPI transaction SMS. SMS stay on your phone – only transaction details are saved to your account.</div><button class="btn" id="smPerm" style="margin-top:10px">Allow SMS access</button>`)
    :`<div class="mute" style="font-size:13px">SMS are captured by the <b>Money & Tasks Android app</b> on your phone. Captured transactions appear here on both phone and laptop – check and add them.</div>`}
    <div style="margin-top:10px"><label>Default account for SMS without a matching account number</label><select id="smDef">${accOptions(S.accs.filter(a=>a.active!==false),SM.defAcc)}</select></div></div>
@@ -97,16 +99,18 @@ function vSms(){
   $("#smRef").onclick=()=>{and&&perm?smsSync(0,false):loadList()};
   $("#smDef").onchange=e=>{SM.defAcc=e.target.value;localStorage.setItem("smsDefAcc",SM.defAcc);SM.rows.forEach(r=>{if(!accFor(r.hint)){r.acc=SM.defAcc;r.dup=isDupR(r);r.sel=!r.dup}});drawSms()};
   if($("#smPerm"))$("#smPerm").onclick=()=>{try{A().requestPerm()}catch(e){toast("Could not ask permission",!0)}};
-  if($("#smScan"))$("#smScan").onclick=async()=>{const b=$("#smScan");b.disabled=true;b.textContent="Scanning…";const n=await smsSync(+$("#smDays").value,true);toast(n?`📩 ${n} new transaction SMS found`:"No new transaction SMS");b.disabled=false;b.textContent="📥 Scan SMS now"};
+  const rd=()=>{SM.from=$("#smFrom").value;SM.to=$("#smTo").value;drawSms()};$("#smFrom").onchange=rd;$("#smTo").onchange=rd;$("#smClr").onclick=()=>{SM.from="";SM.to="";$("#smFrom").value="";$("#smTo").value="";drawSms()};
+  if($("#smScan"))$("#smScan").onclick=async()=>{const f=$("#smFrom").value||dAgo(30),t=$("#smTo").value||today();if(f>t)return toast("From date is after To date",!0);SM.from=f;SM.to=t;$("#smFrom").value=f;$("#smTo").value=t;const b=$("#smScan");b.disabled=true;b.textContent="Scanning…";const n=await smsSync(0,true,{from:f,to:t});toast(n?`📩 ${n} transaction SMS brought into the inbox`:"No transaction SMS found for these dates");b.disabled=false;b.textContent="📥 Scan SMS for these dates"};
   SM.loaded?drawSms():null;loadList()}
 window.onSmsPerm=ok=>{if(ok){toast("SMS access allowed");smsSync(30,false);VIEW==="sms"&&vSms()}else toast("SMS permission denied",!0)};
 
 function drawSms(){
-  const el=$("#smList");if(!el)return;const R=SM.rows;
-  if(!R.length){el.innerHTML=`<div class="card"><div class="empty">No pending SMS transactions 🎉</div></div>`;return}
+  const el=$("#smList");if(!el)return;
+  const inR=r=>(!SM.from||r.date>=SM.from)&&(!SM.to||r.date<=SM.to);const R=SM.rows.filter(inR);const rng=SM.from||SM.to?` <span class="mute" style="font-size:12px">(${SM.from?dmy(SM.from):"…"} – ${SM.to?dmy(SM.to):"…"} · ${R.length} of ${SM.rows.length})</span>`:"";
+  if(!R.length){el.innerHTML=`<div class="card"><div class="empty">No pending SMS transactions${rng?" for these dates":""} 🎉</div></div>`;return}
   const vis=R.filter(r=>(SM.flt==="all"||(SM.flt==="debit"&&r.dir==="debit")||(SM.flt==="credit"&&r.dir==="credit")||(SM.flt==="dup"&&r.dup)||(SM.flt==="nocat"&&r.type!=="transfer"&&!r.cat)||(SM.flt==="noacc"&&!r.acc))&&(!SM.q||(r.desc+" "+r.amount+" "+r.body).toLowerCase().includes(SM.q.toLowerCase())));
   const sel=R.filter(r=>r.sel),accs=S.accs.filter(a=>a.active!==false),sum=a=>a.reduce((s,r)=>s+r.amount,0);
-  el.innerHTML=`<div class="grid g4" style="margin:12px 0"><div class="stat"><div class="l">Pending</div><div class="v">${R.length}</div></div><div class="stat"><div class="l">Debits</div><div class="v red">${fmt(sum(R.filter(r=>r.dir==="debit")))}</div></div><div class="stat"><div class="l">Credits</div><div class="v green">${fmt(sum(R.filter(r=>r.dir==="credit")))}</div></div><div class="stat"><div class="l">Possible duplicates</div><div class="v ${R.some(r=>r.dup)?"amber":""}">${R.filter(r=>r.dup).length}</div></div></div>
+  el.innerHTML=`<div class="grid g4" style="margin:12px 0"><div class="stat"><div class="l">Pending${rng}</div><div class="v">${R.length}</div></div><div class="stat"><div class="l">Debits</div><div class="v red">${fmt(sum(R.filter(r=>r.dir==="debit")))}</div></div><div class="stat"><div class="l">Credits</div><div class="v green">${fmt(sum(R.filter(r=>r.dir==="credit")))}</div></div><div class="stat"><div class="l">Possible duplicates</div><div class="v ${R.some(r=>r.dup)?"amber":""}">${R.filter(r=>r.dup).length}</div></div></div>
   <div class="imp-bar"><label style="display:flex;align-items:center;gap:6px;margin:0;font-weight:600"><input type="checkbox" id="smAll" ${vis.length&&vis.every(r=>r.sel)?"checked":""} style="width:20px;height:20px">All</label>
    <div class="imp-chips">${[["all","All "+R.length],["debit","Debits"],["credit","Credits"],["noacc","No account"],["nocat","No category"],["dup","Duplicates"]].map(([k,l])=>`<a data-sf="${k}" class="${SM.flt===k?"on":""}">${l}</a>`).join("")}</div>
    <input id="smQ" placeholder="Search…" value="${esc(SM.q)}" style="flex:1;min-width:120px">
@@ -147,7 +151,7 @@ function editSms(r){
 async function delRows(rows){if(!rows.length)return;if(!await confirmBox(`Delete ${rows.length} SMS entr${rows.length>1?"ies":"y"} from the inbox? (Your transactions are not affected)`))return;
   const ids=rows.map(r=>r.id);const{error}=await SB.from("sms_txns").update({status:"ignored"}).in("id",ids);if(error)return toast(error.message,!0);
   SM.rows=SM.rows.filter(r=>!ids.includes(r.id));toast(`🗑 ${ids.length} deleted`);countBadge();drawSms()}
-async function addSel(){const sel=SM.rows.filter(r=>r.sel);if(!sel.length)return;
+async function addSel(){const sel=SM.rows.filter(r=>r.sel&&(!SM.from||r.date>=SM.from)&&(!SM.to||r.date<=SM.to));if(!sel.length)return;
   const bad=sel.find(r=>!r.acc||(r.type==="transfer"&&!r.to));if(bad)return toast(!bad.acc?"Some selected rows have no account – set the default account or choose one":"A transfer needs a To account",!0);
   const nc=sel.filter(r=>r.type!=="transfer"&&!r.cat).length;
   if(!await confirmBox(`Add ${sel.length} entries to your transactions?${nc?` (${nc} without category)`:""}`))return;await addRows(sel)}
