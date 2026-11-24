@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -29,3 +31,13 @@ jobs:
         with:
           name: MoneyTasks-apk
           path: MoneyTasks-v1.0.${{ github.run_number }}.apk
+      - name: Publish APK to apk branch (stable download link)
+        run: |
+          mkdir out && cp MoneyTasks-v1.0.${{ github.run_number }}.apk out/MoneyTasks.apk
+          cd out
+          echo "Build ${{ github.run_number }} - $(date -u +%Y-%m-%dT%H:%MZ) - ${{ github.sha }}" > VERSION.txt
+          git init -q -b apk
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add . && git commit -qm "APK build ${{ github.run_number }}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" apk
