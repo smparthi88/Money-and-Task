@@ -62,6 +62,17 @@ class MainActivity : Activity() {
                 if ((u.scheme == "https" || u.scheme == "http") && (host == HOST || host.endsWith(".supabase.co"))) return false
                 return try { startActivity(Intent(Intent.ACTION_VIEW, u)); true } catch (e: Exception) { true }
             }
+            // Offline and the app has not been cached yet (first launch) -> friendly page with Retry
+            override fun onReceivedError(view: WebView, req: WebResourceRequest, err: WebResourceError) {
+                if (!req.isForMainFrame) return
+                val html = "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head>" +
+                    "<body style='font-family:sans-serif;background:#F1F5F9;text-align:center;padding:60px 24px;color:#334155'>" +
+                    "<div style='font-size:48px'>📴</div><h2>No internet connection</h2>" +
+                    "<p>Open Money &amp; Tasks once with internet. After that it works offline and syncs automatically when you are back online.</p>" +
+                    "<button onclick=\"location.href='$HOME'\" style='margin-top:16px;padding:12px 28px;border:0;border-radius:10px;background:#1e40af;color:#fff;font-size:16px'>Retry</button>" +
+                    "<script>addEventListener('online',function(){location.href='$HOME'})</script></body></html>"
+                view.loadDataWithBaseURL(HOME, html, "text/html", "utf-8", HOME)
+            }
             override fun onPageFinished(view: WebView, url: String) {
                 // remember the file name of blob downloads (jsPDF / Excel exports)
                 view.evaluateJavascript(
